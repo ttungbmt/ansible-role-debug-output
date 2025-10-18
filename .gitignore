@@ -1,0 +1,39 @@
+# Ansible Galaxy build artifacts
+*.tar.gz
+*.retry
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test output
+tests/output/
+.tmp/
+tmp/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+

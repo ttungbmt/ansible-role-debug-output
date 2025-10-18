@@ -1,48 +1,191 @@
 ---
-# Default variables for the debug_inventory role.
+# Default variables for the debug_output role.
 # You can override these variables in your playbook or inventory as needed.
 
+# ============================================================================
+# OUTPUT CONFIGURATION
+# ============================================================================
+
 # Directory where all debug output files will be written.
-# Default is `./debug_output` in the playbook's working directory.
-debug_output_dir: ".debug_output"
+# Default is `./.debug_output` in the playbook's working directory.
+debug_output_dir: ".tmp/debug_output"
+
+# Whether to clean the output directory before generating new reports.
+# When enabled, all files in the hosts/ and inventory/ subdirectories will be removed
+# before generating new reports. This prevents old files from previous runs from
+# remaining in the output directory.
+# Set to false if you want to preserve previous reports or append to existing output.
+debug_clean_output_dir: false
 
 # Path to the inventory file. If left null, the role attempts to detect
 # the inventory automatically using the first entry in `ansible_inventory_sources`.
-# You may override this with a specific file, e.g. "inventory.yml".
+# You may override this with a specific file, e.g. "inventories/production/hosts.yml".
 debug_inventory_file: null
 
-# Whether to write a file containing all hostvars for the entire cluster.
+# Whether to write a file containing all hostvars for the entire inventory.
 # Enabling this can produce a very large file for large inventories.
-debug_write_cluster_hostvars: true
+# Set to false if you only need per-host reports.
+# Note: This creates a duplicate of inventory_list file for backward compatibility.
+debug_write_inventory_hostvars: false
+
+# ============================================================================
+# VARIABLE FILTERING CONFIGURATION
+# ============================================================================
 
 # Keys to exclude when filtering per-host variables. Many of these keys are large
 # or provide context that is duplicated elsewhere (e.g. groups, hostvars).
 # You can add or remove keys as required for your environment.
-debug_exclude_keys:
-  - groups
-  - hostvars
-  - vars
-  - ansible_facts
-  - ansible_env
-  - environment
-  - group_names
-  - inventory_hostname
-  - inventory_hostname_short
-  - inventory_dir
-  - inventory_file
-  - ansible_inventory_sources
-  - playbook_dir
-  - ansible_config_file
-  - ansible_version
-  - ansible_play_hosts
-  - ansible_play_hosts_all
-  - ansible_play_batch
-  - ansible_delegated_vars
-  - ansible_skip_tags
-  - ansible_run_tags
-  - ansible_forks
-  - ansible_verbosity
-  - ansible_limit
-  - ansible_check_mode
-  - ansible_diff_mode
-  - omit
+#
+# These are the large structural variables that are duplicated in inventory-wide files
+# or are internal Ansible runtime variables that are not typically useful for debugging.
+# Note: This is only used when debug_include_keys is empty.
+debug_exclude_keys: []
+
+# Keys to explicitly include when filtering per-host variables.
+# If this list is not empty, ONLY these keys will be included (debug_exclude_keys is ignored).
+# This is useful when you only want to see specific variables.
+# Example: ['ansible_distribution', 'ansible_hostname', 'my_app_version']
+debug_include_keys: []
+
+# Regex patterns for including variables (applied after include_keys/exclude_keys).
+# Variables matching any of these patterns will be included.
+# Example: ['^app_.*', '^db_.*'] will include all variables starting with 'app_' or 'db_'
+debug_include_patterns: []
+
+# Regex patterns for excluding variables (applied after include_keys/exclude_keys and include_patterns).
+# Variables matching any of these patterns will be excluded.
+# Example: ['^.*_password$', '^.*_secret$'] will exclude variables ending with '_password' or '_secret'
+debug_exclude_patterns: []
+
+# ============================================================================
+# FACTS FILTERING CONFIGURATION
+# ============================================================================
+
+# Keys to exclude when filtering ansible_facts. These are typically verbose or large
+# fact keys that make the output difficult to read and are rarely needed for debugging.
+# You can add or remove keys as required for your environment.
+# Note: Keys in ansible_facts do NOT have the 'ansible_' prefix.
+# Note: This is only used when debug_facts_include_keys is empty.
+debug_facts_exclude_keys:
+  # ============================================================================
+  # MOST IMPACTFUL EXCLUSIONS FOR FILE SIZE REDUCTION
+  # ============================================================================
+  # These are the top contributors to file bloat. Excluding these can reduce
+  # file size by 90%+ while keeping all essential debugging information.
+
+  # Package information (EXTREMELY LARGE - can contain thousands of packages)
+  # This single key can add 100K+ to file size on typical systems
+  - packages
+
+  # System services list (VERY LARGE - can contain hundreds of services)
+  # Adds 20-50K to file size depending on system
+  - services
+
+  # Block devices information (LARGE - detailed info for all disks/partitions)
+  # Can add 10-30K depending on storage configuration
+  - devices
+
+  # Device symlinks (VERBOSE - all /dev symlinks)
+  - device_links
+
+  # CPU flags (VERBOSE - hundreds of CPU feature flags)
+  # Adds 5-10K with minimal debugging value
+  - flags
+
+  # ============================================================================
+  # NETWORK INTERFACE DETAILS (DYNAMIC KEYS)
+  # ============================================================================
+  # Individual network interface facts (eth0, ens160, etc.) contain extremely
+  # verbose information including all interface features, offload settings, etc.
+  # Each interface can add 2-5K to file size.
+  #
+  # These are dynamic keys based on interface names, so they cannot be excluded
+  # by name here. However, the most common interface names are listed below.
+  #
+  # RECOMMENDED: Use debug_facts_exclude_patterns for more comprehensive filtering:
+  # Example: debug_facts_exclude_patterns: ['^(eth|ens|enp|wlan|wlp|lo)[0-9]+.*']
+  #
+  # Common interface names to exclude (add more as needed for your environment):
+  - eth0
+  - eth1
+  - eth2
+  - ens160
+  - ens192
+  - ens224
+  - enp0s3
+  - enp0s8
+  - wlan0
+  - wlp2s0
+  - lo                        # Loopback interface (usually not needed)
+
+  # ============================================================================
+  # ADDITIONAL EXCLUSIONS (OPTIONAL)
+  # ============================================================================
+  # Uncomment any of the following to further reduce file size:
+  #
+  # Storage-related (can be large on systems with many mounts/LVM):
+  # - mounts                  # All mounted filesystems
+  # - lvm                     # LVM configuration
+  #
+  # Hardware details (verbose but sometimes useful):
+  # - processor               # Detailed CPU info
+  # - memory_mb               # Detailed memory breakdown
+  #
+  # Network details (keep default_ipv4 for basic network info):
+  # - all_ipv4_addresses      # List of all IPv4 addresses
+  # - all_ipv6_addresses      # List of all IPv6 addresses
+  # - interfaces              # List of all interface names
+  #
+  # System details (rarely needed):
+  # - env                     # Environment variables (use environment_system section instead)
+  # - uptime_seconds          # System uptime (changes frequently)
+  # - loadavg                 # System load (changes frequently)
+  #
+  # Security (verbose):
+  # - selinux                 # SELinux configuration
+  # - apparmor                # AppArmor configuration
+  # - ssh_host_key_*          # SSH host keys (6 keys total)
+  #
+  # BIOS/Hardware inventory (rarely needed for debugging):
+  # - bios_*                  # BIOS information (3 keys)
+  # - board_*                 # Motherboard info (5 keys)
+  # - chassis_*               # Chassis info (4 keys)
+  # - product_*               # Product info (4 keys)
+
+# Keys to explicitly include when filtering ansible_facts.
+# If this list is not empty, ONLY these keys will be included (debug_facts_exclude_keys is ignored).
+# This is useful when you only want to see specific facts.
+# Note: Keys in ansible_facts do NOT have the 'ansible_' prefix.
+# Example: ['distribution', 'hostname', 'default_ipv4', 'architecture']
+debug_facts_include_keys: []
+
+# ============================================================================
+# REPORT SECTIONS CONFIGURATION
+# ============================================================================
+
+# Control which sections are included in per-host reports.
+# Set to 'all' to include all sections, or provide a list of section names.
+# Available sections:
+#   - inventory_info: Basic inventory information (hostname, groups, etc.)
+#   - group_names: List of groups this host belongs to
+#   - vars: All variables for this host (filtered based on include/exclude settings)
+#   - facts: Ansible facts gathered from the host
+#   - environment_task: Task-level environment variables
+#   - environment_system: System environment variables from the host
+#   - connection_info: Connection details (host, port, user, etc.)
+#   - play_info: Information about the current play
+#   - ansible_config: Ansible configuration and runtime settings
+#
+# Examples:
+#   debug_report_sections: all                                    # Include all sections (default)
+#   debug_report_sections: ['inventory_info', 'vars', 'facts']   # Only include these sections
+debug_report_sections: all
+
+# ============================================================================
+# PERFORMANCE CONFIGURATION
+# ============================================================================
+
+# Timeout (in seconds) for async operations when parallel execution is enabled.
+# This is a placeholder for future async implementation.
+debug_async_timeout: 300
+

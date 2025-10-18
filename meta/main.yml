@@ -1,34 +1,51 @@
 ---
 galaxy_info:
+  namespace: ttungbmt
   role_name: debug_output
-  author: DevOps Automation Team
+  author: Truong Thanh Tung
   description: >
-    Generates detailed debug reports for your Ansible inventory, variables, and runtime context.
-    Separates host-specific data from cluster-wide data for easier inspection.
-  company: Your Company Name
+    Generate comprehensive debug reports for Ansible deployments with advanced
+    filtering capabilities. Outputs per-host and inventory-wide reports in YAML
+    format, including variables, facts, environment, and configuration details.
+    Reduces output size by up to 94% with intelligent facts filtering.
+  company: Personal
   license: MIT
+
   min_ansible_version: "2.9"
 
   platforms:
     - name: EL
       versions:
+        - "7"
         - "8"
         - "9"
     - name: Ubuntu
       versions:
-        - "20.04"
-        - "22.04"
+        - focal
+        - jammy
+        - noble
     - name: Debian
       versions:
-        - "10"
-        - "11"
+        - buster
+        - bullseye
+        - bookworm
+    - name: Fedora
+      versions:
+        - "38"
+        - "39"
+        - "40"
 
   galaxy_tags:
     - debug
+    - troubleshooting
     - inventory
-    - ansible
     - variables
-    - facts
+    - diagnostics
+    - validation
     - reporting
+    - facts
+    - monitoring
+    - ansible
 
 dependencies: []
+

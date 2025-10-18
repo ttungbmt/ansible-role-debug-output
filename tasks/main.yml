@@ -1,8 +1,19 @@
 ---
-# This task file generates detailed debug reports for an Ansible inventory.
+# This task file generates detailed debug reports for Ansible deployments.
 # It writes per-host files containing filtered variables and facts for each host,
-# and cluster-wide files containing inventory graphs, group listings, and optionally all hostvars.
-# Comments and structure are provided to make the role easy to understand and modify.
+# and inventory-wide files containing inventory graphs, group listings, and optionally all hostvars.
+# Based on the design pattern from ttungbmt/ansible-role-debug-output
+
+# Step 0: Clean output directories (run once, optional)
+- name: Clean output directories before generating new reports
+  ansible.builtin.shell:
+    cmd: |
+      rm -f {{ debug_output_dir }}/hosts/* 2>/dev/null || true
+      rm -f {{ debug_output_dir }}/inventory/* 2>/dev/null || true
+  delegate_to: localhost
+  run_once: true
+  when: debug_clean_output_dir | bool
+  changed_when: false
 
 # Step 1: Create output directories (run once)
 - name: Ensure output directories exist
@@ -12,7 +23,7 @@
     mode: '0755'
   loop:
     - "{{ debug_output_dir }}"
-    - "{{ debug_output_dir }}/cluster"
+    - "{{ debug_output_dir }}/inventory"
     - "{{ debug_output_dir }}/hosts"
   delegate_to: localhost
   run_once: true
@@ -28,9 +39,9 @@
       }}
   run_once: true
 
-# Step 4: Run the ansible-inventory command to capture the full inventory list.
+# Step 3: Run the ansible-inventory command to capture the full inventory list.
 # This command is run on localhost and only once for the whole play.
-- name: Run ansible-inventory --list (cluster)
+- name: Run ansible-inventory --list (inventory-wide)
   ansible.builtin.command:
     cmd: ansible-inventory -i {{ inventory_src }} --list --yaml
   register: inventory_list_cmd
@@ -38,8 +49,8 @@
   delegate_to: localhost
   run_once: true
 
-# Step 5: Run the ansible-inventory command to capture the inventory graph.
-- name: Run ansible-inventory --graph (cluster)
+# Step 4: Run the ansible-inventory command to capture the inventory graph.
+- name: Run ansible-inventory --graph (inventory-wide)
   ansible.builtin.command:
     cmd: ansible-inventory -i {{ inventory_src }} --graph
   register: inventory_graph_cmd
@@ -49,127 +60,200 @@
 
 # -------- PER-HOST SECTION (runs once per host) --------
 
-# Filter variables for the current host to avoid including large or repetitive keys.
-# This produces a dictionary (vars_filtered) containing only the keys not present in debug_exclude_keys.
-- name: Filter vars for the current host
-  ansible.builtin.set_fact:
-    vars_filtered: >-
-      {{
-        hostvars[inventory_hostname]
-        | dict2items
-        | rejectattr('key', 'in', debug_exclude_keys)
-        | list
-        | items2dict
-      }}
-
-# Compose the per-host report using filtered variables, facts, environment, and metadata.
-# The report is formatted with headers for readability.
-- name: Compose per-host report
-  ansible.builtin.set_fact:
-    per_host_report: |
-      ====== INVENTORY INFO (HOST) ======
-      inventory_hostname: {{ inventory_hostname }}
-      inventory_hostname_short: {{ inventory_hostname_short }}
-      inventory_dir: {{ inventory_dir | default('N/A') }}
-      inventory_file: {{ inventory_file | default('N/A') }}
-
-      ====== GROUP NAMES (HOST) ======
-      {{ group_names | to_nice_yaml }}
-
-      ====== VARS (FILTERED - HOST) ======
-      {{ vars_filtered | to_nice_yaml }}
-
-      ====== FACTS (HOST) ======
-      {{ ansible_facts | default({}) | to_nice_yaml }}
-
-      ====== ENVIRONMENT (task-level, HOST) ======
-      {{ environment | default('<undefined>') | to_nice_json }}
-
-      ====== ENVIRONMENT (system, HOST) ======
-      {{ ansible_env | default({}) | to_nice_yaml }}
-
-      ====== CONNECTION INFO (HOST) ======
-      ansible_connection: {{ ansible_connection | default('N/A') }}
-      ansible_host: {{ ansible_host | default('N/A') }}
-      ansible_port: {{ ansible_port | default('N/A') }}
-      ansible_user: {{ ansible_user | default('N/A') }}
-
-      ====== PLAY INFO (HOST) ======
-      playbook_dir: {{ playbook_dir }}
-      ansible_play_hosts: {{ ansible_play_hosts | default([]) | to_nice_yaml }}
-      ansible_play_batch: {{ ansible_play_batch | default([]) | to_nice_yaml }}
-      ansible_play_hosts_all: {{ ansible_play_hosts_all | default([]) | to_nice_yaml }}
-
-      ====== ANSIBLE CONFIG & RUNTIME (RUN) ======
-      ansible_config_file: {{ ansible_config_file | default('N/A') }}
-      ansible_version: {{ ansible_version.full }}
-      ansible_check_mode: {{ ansible_check_mode | default(false) }}
-      ansible_diff_mode: {{ ansible_diff_mode | default(false) }}
-      ansible_skip_tags: {{ ansible_skip_tags | default([]) | to_nice_yaml }}
-      ansible_run_tags: {{ ansible_run_tags | default([]) | to_nice_yaml }}
-      ansible_forks: {{ ansible_forks | default('N/A') }}
-      ansible_verbosity: {{ ansible_verbosity | default(0) }}
-      ansible_limit: {{ ansible_limit | default('N/A') }}
-
-# Write the per-host report into a file under debug_output_dir/hosts.
-- name: Write per-host report
-  ansible.builtin.copy:
-    content: "{{ per_host_report }}"
-    dest: "{{ debug_output_dir }}/hosts/{{ inventory_hostname }}.txt"
+# Use ansible-inventory command to dump host variables without template evaluation
+- name: Get host variables using ansible-inventory
+  ansible.builtin.command:
+    cmd: ansible-inventory -i {{ inventory_src }} --host {{ inventory_hostname }} --yaml
+  register: host_vars_cmd
+  changed_when: false
   delegate_to: localhost
 
-# -------- CLUSTER-WIDE SECTION (run once) --------
+# Apply advanced filtering to host variables
+# Note: We keep the original YAML string and only parse/filter if needed
+- name: Set default host vars (no filtering)
+  ansible.builtin.set_fact:
+    host_vars_yaml: "{{ host_vars_cmd.stdout }}"
+    host_vars_filtered: "{{ host_vars_cmd.stdout | from_yaml }}"
+  delegate_to: localhost
 
-# Write the groups dictionary to a YAML file. This provides a clear listing of groups and their hosts.
-- name: Write groups map (cluster)
+# If include_keys is specified, only include those keys
+- name: Filter variables - include only specified keys
+  ansible.builtin.set_fact:
+    host_vars_filtered: >-
+      {{
+        host_vars_filtered | dict2items
+        | selectattr('key', 'in', debug_include_keys)
+        | items2dict
+      }}
+    host_vars_yaml: >-
+      {{
+        (host_vars_filtered | dict2items
+        | selectattr('key', 'in', debug_include_keys)
+        | items2dict) | to_nice_yaml
+      }}
+  when: debug_include_keys | length > 0
+  delegate_to: localhost
+
+# If include_keys is NOT specified, apply default exclude_keys
+- name: Filter variables - exclude default keys
+  ansible.builtin.set_fact:
+    host_vars_filtered: >-
+      {{
+        host_vars_filtered | dict2items
+        | rejectattr('key', 'in', debug_exclude_keys)
+        | items2dict
+      }}
+    host_vars_yaml: >-
+      {{
+        (host_vars_filtered | dict2items
+        | rejectattr('key', 'in', debug_exclude_keys)
+        | items2dict) | to_nice_yaml
+      }}
+  when: debug_include_keys | length == 0
+  delegate_to: localhost
+
+# Apply include patterns (additive - adds more variables)
+- name: Apply include patterns
+  ansible.builtin.set_fact:
+    host_vars_filtered: >-
+      {{
+        host_vars_filtered | combine(
+          (host_vars_cmd.stdout | from_yaml) | dict2items
+          | selectattr('key', 'match', debug_include_patterns | join('|'))
+          | items2dict
+        )
+      }}
+  when: debug_include_patterns | length > 0
+  delegate_to: localhost
+
+# Apply exclude patterns (subtractive - removes variables)
+- name: Apply exclude patterns
+  ansible.builtin.set_fact:
+    host_vars_filtered: >-
+      {{
+        host_vars_filtered | dict2items
+        | rejectattr('key', 'match', debug_exclude_patterns | join('|'))
+        | items2dict
+      }}
+  when: debug_exclude_patterns | length > 0
+  delegate_to: localhost
+
+# Update YAML representation if patterns were applied
+- name: Update YAML representation after pattern filtering
+  ansible.builtin.set_fact:
+    host_vars_yaml: "{{ host_vars_filtered | to_nice_yaml }}"
+  when: (debug_include_patterns | length > 0) or (debug_exclude_patterns | length > 0)
+  delegate_to: localhost
+
+# Write the per-host report in YAML format
+- name: Write per-host report
+  ansible.builtin.template:
+    src: per_host_report.yaml.j2
+    dest: "{{ debug_output_dir }}/hosts/{{ inventory_hostname }}.yaml"
+  delegate_to: localhost
+
+# -------- INVENTORY-WIDE SECTION (run once) --------
+
+# Write the groups dictionary to YAML file
+- name: Write groups map (inventory-wide)
   ansible.builtin.copy:
     content: "{{ groups | to_nice_yaml }}"
-    dest: "{{ debug_output_dir }}/cluster/groups.yaml"
+    dest: "{{ debug_output_dir }}/inventory/groups.yaml"
   delegate_to: localhost
   run_once: true
 
 # Write the inventory graph from the command to a plain text file.
-- name: Write inventory graph (command) - cluster
+- name: Write inventory graph (inventory-wide)
   ansible.builtin.copy:
     content: "{{ inventory_graph_cmd.stdout }}"
-    dest: "{{ debug_output_dir }}/cluster/inventory_graph.txt"
+    dest: "{{ debug_output_dir }}/inventory/inventory_graph.txt"
   delegate_to: localhost
   run_once: true
 
 # Write the full inventory list from the command to a YAML file.
-- name: Write inventory list (cluster)
+- name: Write inventory list (inventory-wide)
   ansible.builtin.copy:
     content: "{{ inventory_list_cmd.stdout }}"
-    dest: "{{ debug_output_dir }}/cluster/inventory_list.yaml"
+    dest: "{{ debug_output_dir }}/inventory/inventory_list.yaml"
   delegate_to: localhost
   run_once: true
 
 # Optionally write all hostvars to a YAML file. This file may be large and is written only if enabled.
-- name: Write HOSTVARS for all hosts (cluster)
+# Note: This uses the output from ansible-inventory --list which already contains all hostvars.
+# This is essentially a duplicate of inventory_list.yaml but kept for backward compatibility.
+- name: Write hostvars for all hosts (inventory-wide)
   ansible.builtin.copy:
-    content: "{{ hostvars | to_nice_yaml }}"
-    dest: "{{ debug_output_dir }}/cluster/hostvars_all.yaml"
-  when: debug_write_cluster_hostvars | bool
+    content: "{{ inventory_list_cmd.stdout }}"
+    dest: "{{ debug_output_dir }}/inventory/hostvars_all.yaml"
+  when: debug_write_inventory_hostvars | bool
   delegate_to: localhost
   run_once: true
 
-# Write a cluster metadata report with references to generated files.
-- name: Write CLUSTER_REPORT (cluster metadata)
+# Write an inventory metadata report with references to generated files.
+- name: Write INVENTORY_REPORT (inventory metadata)
   ansible.builtin.copy:
     content: |
-      ====== CLUSTER METADATA ======
+      ====== INVENTORY METADATA ======
       inventory_src: {{ inventory_src }}
       ansible_inventory_sources: {{ ansible_inventory_sources | default([]) | to_nice_yaml }}
       ansible_config_file: {{ ansible_config_file | default('N/A') }}
       ansible_version: {{ ansible_version.full }}
+      output_format: YAML
 
-      ====== FILES ======
-      - {{ debug_output_dir }}/cluster/groups.yaml
-      - {{ debug_output_dir }}/cluster/inventory_graph.txt
-      - {{ debug_output_dir }}/cluster/inventory_list.yaml
-      {% if debug_write_cluster_hostvars | bool %}
-      - {{ debug_output_dir }}/cluster/hostvars_all.yaml
+      ====== CONFIGURATION ======
+      Output format: YAML
+      Report sections: {{ debug_report_sections if debug_report_sections != 'all' else 'all (default)' }}
+      {% if debug_include_keys | length > 0 %}
+      Include keys: {{ debug_include_keys | join(', ') }}
+      {% else %}
+      Exclude keys: {{ debug_exclude_keys | join(', ') }}
       {% endif %}
-    dest: "{{ debug_output_dir }}/cluster/CLUSTER_REPORT.txt"
+      {% if debug_include_patterns | length > 0 %}
+      Include patterns: {{ debug_include_patterns | join(', ') }}
+      {% endif %}
+      {% if debug_exclude_patterns | length > 0 %}
+      Exclude patterns: {{ debug_exclude_patterns | join(', ') }}
+      {% endif %}
+
+      ====== FILES GENERATED ======
+      - {{ debug_output_dir }}/inventory/groups.yaml
+      - {{ debug_output_dir }}/inventory/inventory_list.yaml
+      {% if debug_write_inventory_hostvars | bool %}
+      - {{ debug_output_dir }}/inventory/hostvars_all.yaml
+      {% endif %}
+      - {{ debug_output_dir }}/inventory/inventory_graph.txt
+      - {{ debug_output_dir }}/hosts/<inventory_hostname>.yaml (per host)
+
+      ====== USAGE ======
+      To inspect a specific host:
+        cat {{ debug_output_dir }}/hosts/<hostname>.yaml
+
+      To view inventory-wide information:
+        cat {{ debug_output_dir }}/inventory/INVENTORY_REPORT.yaml
+        cat {{ debug_output_dir }}/inventory/groups.yaml
+        cat {{ debug_output_dir }}/inventory/inventory_graph.txt
+    dest: "{{ debug_output_dir }}/inventory/INVENTORY_REPORT.yaml"
   delegate_to: localhost
   run_once: true
+
+# Display summary message
+- name: Display debug output summary
+  ansible.builtin.debug:
+    msg: |
+      ==========================================
+      Debug Output Generated (v1.2.0)
+      ==========================================
+      Output directory: {{ debug_output_dir }}
+      Output format: YAML
+
+      Per-host reports: {{ debug_output_dir }}/hosts/
+      Inventory-wide reports: {{ debug_output_dir }}/inventory/
+
+      View inventory summary:
+        cat {{ debug_output_dir }}/inventory/INVENTORY_REPORT.yaml
+
+      View host-specific report:
+        cat {{ debug_output_dir }}/hosts/{{ inventory_hostname }}.yaml
+      ==========================================
+  run_once: true
+

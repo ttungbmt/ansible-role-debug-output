@@ -1,4 +1,35 @@
+---
+# .ansible-lint configuration for debug_output role
+
+# Exclude paths
+exclude_paths:
+  - .venv/
+  - .tmp/
+  - tests/output/
+  - docs/
+
+# Enable specific rules
+enable_list:
+  - yaml
+
+# Skip specific rules
 skip_list:
-  - 'yaml'
-  - 'risky-shell-pipe'
-  - 'role-name'
+  - yaml[line-length]  # Allow longer lines in templates
+  - name[casing]       # Allow flexible task naming
+  - risky-file-permissions  # We intentionally use specific permissions
+
+# Warn only (don't fail)
+warn_list:
+  - experimental
+  - ignore-errors
+  - no-handler
+
+# Use default rules
+use_default_rules: true
+
+# Offline mode (don't check for updates)
+offline: false
+
+# Parseable output
+parseable: true
+
